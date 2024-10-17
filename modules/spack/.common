@@ -1,0 +1,106 @@
+#%Module1.0
+
+conflict conda
+
+set help "Spack build-from-source HPC package manager"
+set url    "https://spack.io"
+
+module-whatis "[module-info name]: $help"
+
+proc ModulesHelp { } {
+    variable help
+    variable url
+    puts stderr "Module [module-info name]"
+    puts stderr "$help"
+    puts stderr "Information available at $url"
+}
+
+# Get version from module name
+set version [lindex [split [module-info name] {/}] 1]
+# Get user and project to use in spackenv because we run it with a blank environment.
+# the env array is a global, so need to access with :: syntax
+set project $::env(PROJECT)
+set user $::env(USER)
+
+
+# The module command (in the current system version 'Modules Release 4.3.0 (2019-07-26)')
+# doesn't allow to source a file and then, when the module is unloaded, unset the variables 
+# set by that file.
+# As a workaround, we have to manually set through 'setenv' all the variables that a specific file would set,
+# so that when the module is unloaded, all the 'setenv' commands will become 'unsetenv' commands and any env 
+# variable set by loading the module can be effectively cleaned.
+
+# Get the environment variables from 'spack's setup-env.sh'
+set spackenv [exec /bin/env -i /home/565/dm5220/spack_module/modules/spack/spackenv.sh $version $project $user]
+
+# Convert the environment into module commands
+
+# Regex for an environment variable
+set regvar {^([^=]*)=(.*)}
+# Regex for the start of an environment function
+set regfuncstart {^BASH_FUNC_([^=]*)%%=\(\) (.*)}
+# Regex for the end of an environment function
+set regfuncend ^\\}$
+# split the environment into single lines
+set lines [split $spackenv '\n']
+# loop over the lines with an index
+for {set i 0} {$i < [llength $lines]} {incr i} {
+    # get the line
+    set line [lindex $lines $i]
+    # if the line is the start of a function
+    if {[regexp $regfuncstart $line]} {
+        # get the function name and the first line
+        regexp $regfuncstart $line -> fname firstline
+        # set a counter for the number of lines in the function
+        set n 1
+        # create a list to store the function
+        set funclist {}
+        # add the first line to the function
+        lappend funclist $firstline
+        # loop over the next lines and check if they belong to the function
+        while {1} {
+            # get the next line
+            set line [lindex $lines $i+$n]
+            # add the line to the function
+            lappend funclist $line
+            # if the line is the end of the function
+            if {[regexp $regfuncend $line]} {
+                # join the function lines into a single string
+                set func [join $funclist "\n"]
+                # set the function as an environment variable
+                set-function $fname $func
+                # exit the loop
+                break
+            }
+            # increment the counter for the lines in the function
+            incr n
+        }
+        # increment the main index by the number of lines in thefunction
+        incr i $n
+    } else {
+        # get the key and value of the environment variable
+        regexp $regvar $line -> key value
+        
+        # Exclude $PWD, $_ and $MODULEPATH from being set as environment variables
+        if {[lsearch -exact {MODULEPATH PWD _} $key] >= 0} {
+            continue
+        } elseif {[string match *?PATH $key]} {
+            # A *PATH variable to be prepended with a ':'
+            prepend-path $key $value
+            continue
+        } elseif {[lsearch {_LMFILES_ LOADEDMODULES} $key] >= 0} {
+            # Modulefile stuff that works like a path
+            prepend-path $key $value
+            continue
+        } elseif {[string match PATH $key]} {
+            # PATH itself (strip out the system paths to keep ordering correct)
+            prepend-path $key [regsub {:/usr/bin:/bin} $value {}]
+            continue
+        } else {
+            # otherwise set the environment variable
+            setenv $key $value
+        }
+    }
+}
+# Set 'spacktivate' alias
+set-alias spacktivate {spack env activate}
